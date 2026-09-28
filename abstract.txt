@@ -1,0 +1,5 @@
+**Neuro-Symbolic RF Surrogates for Robust Filter Design**
+
+**Huawei TechArena 2026 — Sub-Topic 3: Applications of AI to the modelling of EM problems**
+
+This project proposes a neuro-symbolic workflow to reduce the computational cost of electromagnetic modelling and manufacturing-tolerance analysis for microstrip RF filters. It combines a parametric physics-informed neural network, trained using Maxwell’s equations and full-wave simulation data, with explicit geometry and RF specification rules. The proposed controller uses predictive uncertainty and physics residuals to select new full-wave simulations and records which requirement triggered each evaluation. Building on existing surrogate and active-learning methods, the project will test whether this integration improves data efficiency and manufacturing-yield estimation against established baselines. Its benefits remain research hypotheses to be validated.
