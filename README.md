@@ -1,518 +1,838 @@
-![Workflow](TECHARENA_2026_Workflow.png)
+# Neuro-Symbolic RF Surrogates for Robust Filter Design
 
-**La proposta ha una logica scientifica plausibile, ma non abbiamo ancora dimostrato che funzioni sul nostro filtro RF.** Il deck descrive un progetto di ricerca: i vantaggi numerici sono obiettivi da verificare.
+**Huawei TechArena 2026 - Sub-Topic 3: Applications of AI to the modelling of EM problems**
 
-Nella risposta precedente ho introdotto troppo rapidamente diversi concetti. Partiamo dal problema fisico, poi vediamo cosa aggiunge ciascuna tecnologia.
+[Italiano](#italiano) · [English](#english) · [References / Bibliografia](#references)
 
-**1. Che cosa vogliamo costruire?**
+> **Stato / Status:** proposta di ricerca da implementare e validare / research proposal awaiting implementation and validation. Questo README descrive il progetto previsto, non un software o un prototipo già funzionante. / This README describes the intended project, not an already working implementation or prototype.
 
-Un **filtro a radiofrequenza**, cioè un componente che lascia passare determinate frequenze e attenua le altre.
+<a id="italiano"></a>
+## Italiano
 
-Immagina di voler ricevere una stazione radio: il filtro aiuta a selezionare la parte di segnale che interessa. Nel nostro caso è un circuito formato da piste metalliche su un materiale isolante, chiamato *substrato*. Questa tecnologia si chiama **microstrip**.
+### Percorso di lettura
 
-Il suo comportamento dipende da:
+1. [Il progetto in poche parole](#it-overview)
+2. [Il dispositivo e i concetti di base](#it-basics)
+3. [Il problema della progettazione e delle tolleranze](#it-problem)
+4. [Le soluzioni esistenti](#it-existing)
+5. [La proposta e il contributo da verificare](#it-proposal)
+6. [Il workflow passo passo](#it-workflow)
+7. [Come funzionano PINN e regole simboliche](#it-model)
+8. [Perché l'approccio ha potenzialità](#it-potential)
+9. [Cosa misurare e validare](#it-validation)
+10. [Rischi, limiti e contromisure](#it-risks)
+11. [Piano di implementazione e dati necessari](#it-plan)
+12. [Glossario e domande frequenti](#it-glossary)
 
-| Elemento | Effetto sul dispositivo |
-|---|---|
-| Lunghezza delle piste | Influenza le frequenze di risonanza |
-| Distanza tra piste | Influenza quanto interagiscono e la banda del filtro |
-| Materiale isolante | Influenza la propagazione del campo |
-| Perdite nei materiali | Riducono la potenza utile trasmessa |
+<a id="it-overview"></a>
+### 1. Il progetto in poche parole
 
-Per alcune strutture risonanti, una relazione **approssimata** è:
+Vogliamo progettare un filtro a radiofrequenza che funzioni bene anche quando la fabbricazione introduce piccole differenze nelle dimensioni o nei materiali.
 
-\[
-f_{\mathrm{risonanza}}\propto \frac{1}{L\sqrt{\varepsilon_{\mathrm{eff}}}}
-\]
+Oggi possiamo verificare ogni variante con un simulatore elettromagnetico accurato. Il problema è il costo di ripetere questi calcoli molte volte. La proposta usa una rete neurale per valutare rapidamente numerose varianti e un insieme di regole esplicite per decidere quali casi richiedono una nuova simulazione di riferimento.
 
-Qui \(L\) è una lunghezza caratteristica e \(\varepsilon_{\mathrm{eff}}\) rappresenta l’effetto del materiale sulla propagazione.
+Il punto da studiare è questo:
 
-Tenendo fisso il materiale, una lunghezza maggiore tende quindi ad abbassare la frequenza. Nel modello semplificato, un aumento dell’1% di \(L\) produce circa una diminuzione dell’1% della frequenza.
+> Possiamo scegliere meglio le nuove simulazioni combinando requisiti RF, incertezza delle previsioni e discrepanze rispetto alle equazioni di Maxwell, mantenendo un'accuratezza sufficiente e riducendo il costo totale?
 
-Questo spiega già un problema concreto: **un piccolo errore di fabbricazione può spostare la risposta del filtro.**
+La rete, le regole e il campionamento adattivo hanno precedenti. Il contributo candidato è la loro integrazione in un controller che registra anche **quale requisito e quale indicatore hanno motivato ogni nuova simulazione**. La sua utilità e la sua originalità specifica devono essere verificate.
 
----
+<a id="it-basics"></a>
+### 2. Il dispositivo e i concetti di base
 
-**2. Come si progetta senza AI?**
+#### 2.1 Che cos'è un filtro RF?
 
-Si disegna una geometria e si usa un **simulatore elettromagnetico**, detto anche *solver*, per calcolare come si comportano i campi elettrici e magnetici.
+Un filtro a radiofrequenza, o **RF**, lascia passare alcune frequenze e attenua le altre. Una radio offre un'analogia intuitiva: per ascoltare una stazione occorre distinguere il segnale desiderato dagli altri. Un filtro passabanda realizza una selezione in frequenza, pur non costituendo da solo un ricevitore completo.
 
-Il solver risolve numericamente le **equazioni di Maxwell**, che descrivono le relazioni fra campi, cariche e correnti. Servono anche materiali, eccitazione e condizioni ai bordi del dominio.
+Il dimostratore previsto è un **filtro microstrip a tre risonatori**: piste metalliche su un materiale isolante, con un piano di massa. I risonatori sono strutture che rispondono con particolare intensità in determinati intervalli di frequenza.
 
-Il progettista modifica le dimensioni e ripete la simulazione finché la risposta soddisfa le specifiche.
+Nel primo esperimento la disposizione degli elementi, detta **topologia**, rimane fissa. Si modificano sei parametri geometrici: tre lunghezze, una larghezza comune e due distanze fra risonatori. Spessore del substrato e permittività sono ulteriori parametri del modello. Questa è una scelta di progetto proposta, ancora da confermare con i dati disponibili.
 
-Due risultati importanti sono:
+| Concetto | Significato semplice | Perché conta |
+|---|---|---|
+| Frequenza | Numero di oscillazioni al secondo, misurato in hertz | Determina quali segnali attraversano il filtro |
+| Banda passante | Intervallo di frequenze da trasmettere | È una parte della specifica di progetto |
+| Substrato | Materiale isolante che sostiene le piste | Influenza propagazione e perdite |
+| Permittività | Proprietà che descrive la risposta elettrica del materiale | Può modificare le frequenze caratteristiche |
+| Accoppiamento | Interazione elettromagnetica fra elementi | Influenza la forma della risposta |
+| Perdite | Energia dissipata o non trasferita al carico desiderato | Riducono l'efficienza del dispositivo |
 
-- **\(S_{21}\):** descrive la trasmissione del segnale dall’ingresso all’uscita.
-- **\(S_{11}\):** descrive la riflessione del segnale verso l’ingresso.
+Per alcune strutture risonanti, un'intuizione utile è:
 
-Nella banda utile vogliamo, generalmente, molta trasmissione e poca riflessione.
+$$
+f_0 \propto \frac{1}{L\sqrt{\varepsilon_{\mathrm{eff}}}}.
+$$
 
-**Perché cercare un altro metodo?** Una simulazione può essere costosa, soprattutto quando devi ripeterla per molte geometrie e variazioni produttive. Anche il solver è un’approssimazione: la sua accuratezza dipende dalla discretizzazione, dai materiali e dalle condizioni impostate.
+Qui $L$ è una lunghezza caratteristica e $\varepsilon_{\mathrm{eff}}$ rappresenta l'effetto combinato dei materiali sulla propagazione. **È un'approssimazione, non la formula completa del filtro.** Suggerisce che una pista più lunga tende ad abbassare la frequenza di risonanza, a parità delle altre condizioni.
 
----
+#### 2.2 Come descriviamo il comportamento del filtro?
 
-**3. Il workflow completo**
+Usiamo i **parametri di scattering**, o parametri **S**, che descrivono onde incidenti, riflesse e trasmesse alle porte del componente.
 
-Il sistema avrebbe due momenti: prima costruisce un modello rapido, poi lo usa per cercare progetti migliori.
+- $S_{11}$ descrive la riflessione alla porta di ingresso.
+- $S_{21}$ descrive la trasmissione dall'ingresso all'uscita.
+- La matrice S completa di un dispositivo a due porte comprende anche $S_{12}$ e $S_{22}$.
+
+Sono quantità complesse: contengono **ampiezza e fase**. Nella banda utile desideriamo generalmente alta trasmissione e bassa riflessione. Nel progetto si modellano i valori complessi, non soltanto una curva di ampiezza.
+
+In una configurazione con normalizzazione coerente delle porte:
+
+$$
+\mathrm{IL}=-20\log_{10}|S_{21}|,\qquad
+\mathrm{RL}=-20\log_{10}|S_{11}|.
+$$
+
+IL indica l'insertion loss: nella banda utile, più bassa è generalmente meglio. RL indica il return loss: più alto significa meno riflessione. Occorre distinguere RL dalla curva $20\log_{10}|S_{11}|$, che ha segno opposto.
+
+<a id="it-problem"></a>
+### 3. Il problema della progettazione e delle tolleranze
+
+#### 3.1 Il metodo convenzionale
+
+Un **solver full-wave** calcola il comportamento dei campi elettrici e magnetici risolvendo numericamente le equazioni di Maxwell. HFSS e CST sono esempi di strumenti utilizzabili.
+
+Il processo tipico è:
+
+1. Definire geometria, materiali, porte ed eccitazione.
+2. Suddividere il dominio in elementi o celle: la **mesh**.
+3. Calcolare la risposta su un insieme di frequenze.
+4. Verificare se le specifiche sono rispettate.
+5. Modificare le dimensioni e ripetere.
+
+Il simulatore è un riferimento numerico, non una verità esatta: mesh, condizioni al contorno, modelli dei materiali e risoluzione in frequenza influenzano l'accuratezza. Prima di usarlo come riferimento occorre verificarne la convergenza.
+
+#### 3.2 Perché non basta trovare un buon progetto nominale?
+
+La fabbricazione produce variazioni: una pista può essere leggermente più larga, un gap più stretto, il substrato diverso dal valore nominale. Un progetto eccellente sulla carta può quindi non rispettare più i requisiti.
+
+La **sensitività** descrive quanto cambia una risposta quando cambia un parametro. La **robustezza** riguarda il mantenimento delle prestazioni sotto variazioni. Lo **yield**, o resa, è la probabilità di rispettare tutte le specifiche considerate.
+
+Con un'analisi **Monte Carlo** estraiamo molte varianti da distribuzioni di tolleranza e valutiamo ciascuna. Per esempio, 930 successi su 1.000 varianti danno una stima del 93%: è solo un esempio didattico, non un risultato del progetto.
+
+$$
+\widehat Y=\frac{1}{N}\sum_{i=1}^{N}\mathbf{1}\{\text{tutte le specifiche soddisfatte nella variante }i\}.
+$$
+
+Simulare ogni variante può richiedere un costo elevato. Inoltre, un piccolo errore della previsione vicino a una soglia RF può cambiare la decisione “conforme/non conforme”, anche se l'errore medio complessivo sembra basso.
+
+<a id="it-existing"></a>
+### 4. Le soluzioni esistenti
+
+Un **surrogate** è un modello approssimato, più rapido del simulatore che sostituisce in alcune valutazioni. È come costruire una mappa a partire da un insieme di misurazioni, invece di ripercorrere ogni volta tutto il territorio.
+
+| Metodo | Come funziona | Punti da controllare |
+|---|---|---|
+| Modelli circuitali ed equivalenti | Semplificano il componente in elementi e relazioni fisiche | Le semplificazioni possono trascurare effetti EM rilevanti |
+| Interpolazione / superfici di risposta | Approssimano la risposta fra esempi noti | Risonanze strette e molti parametri complicano il problema |
+| Kriging / Gaussian Process Regression (GPR) | Predicono una risposta e un'incertezza dipendente dal modello | L'incertezza dipende dalle ipotesi e va verificata |
+| FGSA e dominio ridotto | Identificano direzioni influenti e concentrano il modello in regioni utili | Regioni escluse o direzioni trascurate potrebbero contare per le tolleranze |
+| Reti neurali supervisionate | Imparano dagli esempi la relazione fra input e risposta | Possono richiedere molti dati e generalizzare male fuori dominio |
+| Neuro-TF | Collega reti neurali e rappresentazioni a funzione di trasferimento | Occorre identificare correttamente la struttura della risposta |
+| PINN | Addestra una rete usando dati e residui di equazioni fisiche | Il training può essere difficile e la fisica non certifica automaticamente l'accuratezza |
+| Approcci ibridi per lo yield | Usano il surrogate e rivalutano casi selezionati con il solver | La selezione dei casi e il controllo dell'errore sono essenziali |
+
+**Quattro precedenti particolarmente rilevanti:**
+
+- **[1] FGSA e pre-screening:** Koziel e Pietrenko-Dabrowska riducono e confinano il dominio del modello per migliorare la modellazione di componenti a microonde.
+- **[2] Neuro-TF:** Feng e colleghi integrano informazioni di sensitività EM e feature nella progettazione di filtri con surrogate a funzione di trasferimento.
+- **[3] GPR ibrido per lo yield:** Fuhrländer e Schöps valutano molti campioni Monte Carlo con un surrogate e rivalutano selettivamente quelli critici con il modello di alta fedeltà. È il precedente più vicino al nostro ciclo di verifica.
+- **[4] hPINNs:** Lu e colleghi studiano inverse design con PINN e vincoli, con esempi in ottica e fluidodinamica. Questo non dimostra superiorità sui filtri microstrip.
+
+Questi lavori non sono soluzioni universali, ma sono confronti obbligatori per valutare seriamente la proposta. **La rivalutazione selettiva con il solver non è una nostra invenzione.**
+
+<a id="it-proposal"></a>
+### 5. La proposta e il contributo da verificare
+
+Il sistema proposto contiene tre parti:
+
+| Parte | Compito | Stato rispetto alla letteratura |
+|---|---|---|
+| PINN parametrica | Prevedere campi e parametri S per una famiglia di geometrie | Principio esistente; implementazione RF da sviluppare |
+| Regole simboliche | Rappresentare requisiti geometrici e RF in forma esplicita | Regole e vincoli sono concetti esistenti |
+| Controller delle simulazioni | Usare margini dei requisiti, incertezza e residui fisici per scegliere nuove simulazioni e registrarne le motivazioni | Integrazione candidata da implementare, confrontare e verificare |
+
+**Neuro-simbolico** significa qui che un modello neurale opera insieme a regole leggibili ed eseguibili. Non significa che la rete ragioni come una persona o che il sistema dimostri formalmente la correttezza del dispositivo. Il quadro generale ha precedenti nella letteratura neuro-simbolica [6].
+
+La differenza candidata rispetto al workflow GPR di [3] è un controller che associa ogni decisione a un requisito RF identificabile e integra il residuo Maxwell nel criterio di selezione. Il confronto deve isolare questo contributo dalla semplice sostituzione del GPR con una rete.
+
+Non rivendichiamo una nuova legge fisica, l'invenzione delle PINN o un metodo “mai usato prima”. **La combinazione specifica richiede ulteriori verifiche di anteriorità; la superiorità richiede esperimenti.** Anche aggiungere limiti di larghezza e gap a un ottimizzatore, da solo, non costituisce una novità scientifica.
+
+<a id="it-workflow"></a>
+### 6. Il workflow passo passo
 
 ```mermaid
 flowchart TD
-    A["Specifiche e geometrie ammesse"] --> B["Simulazioni iniziali"]
-    B --> C["Addestramento del modello rapido"]
-    C --> D["Ottimizzatore propone una geometria"]
-    D --> E{"Rispetta le regole geometriche?"}
-    E -->|No| D
-    E -->|Sì| F["AI stima prestazioni e tolleranze"]
-    F --> G["Solver verifica casi selezionati"]
-    G --> H{"Accuratezza e prestazioni sufficienti?"}
-    H -->|No: nuovi dati| C
-    H -->|Sì| I["Prototipo e misure"]
+    A["Specifiche, geometrie e tolleranze"] --> B["Solver: dati iniziali"]
+    B --> C["Addestramento PINN parametrica"]
+    C --> D["Previsioni e indicatori di affidabilità"]
+    A --> E["Controller proposto: regole RF e priorità"]
+    D --> E
+    E --> F["Solver: nuovi casi selezionati"]
+    F --> C
+    D --> G["Sweep di tolleranza e stima dello yield"]
+    H["Campioni di test indipendenti"] --> I["Confronto con risultati full-wave"]
+    G --> I
 ```
 
-Vediamo cosa significa ciascuna parte dell’AI.
+**Passo 1 - Definire il problema.** Concordare banda, limiti RF, materiali, geometria e distribuzioni delle tolleranze. Fissare anche il budget computazionale.
 
-**4. La rete neurale: imparare una scorciatoia**
+**Passo 2 - Costruire un riferimento affidabile.** Generare esempi con il solver, controllando mesh e frequenze. Campionare lo spazio parametrico senza concentrarsi soltanto su un progetto favorevole.
 
-Una **rete neurale** è una funzione matematica con molti parametri regolabili. Durante l’addestramento, questi parametri cambiano per ridurre gli errori sulle risposte previste.
+**Passo 3 - Separare i dati.** Creare training set, validation set e test set per geometrie complete. Le frequenze della stessa geometria non devono finire sia nel training sia nel test.
 
-Nel nostro caso:
+**Passo 4 - Addestrare il surrogate.** La rete impara da risposte note e vincoli fisici. Il validation set serve a scegliere architettura e impostazioni; il test finale rimane separato.
 
-\[
-\text{geometria + materiali + frequenza}
-\quad\longmapsto\quad
-\text{risposta elettromagnetica prevista}
-\]
+**Passo 5 - Valutare nuovi candidati.** Per ciascuna geometria nominale si verificano prima le regole geometriche. Per i candidati ammissibili si stimano risposta, margini RF, incertezza e residui fisici.
 
-Le simulazioni iniziali forniscono esempi di questa relazione. Dopo l’addestramento, la rete può stimare nuove risposte senza ripetere tutti i calcoli del solver.
+**Passo 6 - Scegliere nuove simulazioni.** Il controller privilegia casi poco affidabili o vicini alle soglie, mantenendo anche una quota di esplorazione. Ogni richiesta conserva un motivo leggibile.
 
-Si chiama **surrogate**, cioè modello sostitutivo approssimato.
+**Passo 7 - Aggiornare e misurare.** Le nuove simulazioni alimentano il training. Si confrontano i metodi con budget e criteri di accuratezza espliciti.
 
-**Perché potrebbe funzionare?** Se consideriamo una famiglia limitata di geometrie, la relazione fra parametri e risposta contiene strutture regolari che un modello può apprendere. Esistono applicazioni pubblicate di surrogate neurali all’inverse design elettromagnetico, anche tridimensionale. Questo dimostra la fattibilità dell’approccio in determinati casi, non l’efficacia automatica sul nostro filtro. :chatgpt-content-reference{index="0"}
+**Passo 8 - Studiare tolleranze e design.** Si usa il surrogate per molti sweep, si verifica lo yield con campioni indipendenti e si ottimizzano le dimensioni nominali. I progetti finali ritornano al solver; eventuali prototipi fisici sono una fase successiva.
 
-**Problema principale:** una rete può essere precisa sulle geometrie simili a quelle studiate e sbagliare molto su geometrie diverse. Per questo dichiariamo un intervallo di utilizzo e verifichiamo geometrie mai usate nel training.
+> Scartare una geometria nominale impossibile durante l'ottimizzazione è corretto. Eliminare silenziosamente dal Monte Carlo le varianti produttive che falliscono falserebbe invece lo yield: vanno conteggiate coerentemente con la definizione di fallimento.
 
----
+<a id="it-model"></a>
+### 7. Come funzionano PINN e regole simboliche
 
-**5. La PINN: insegnare anche la fisica**
+#### 7.1 La PINN parametrica
 
-Una **Physics-Informed Neural Network**, o PINN, viene addestrata tenendo conto sia dei dati sia delle equazioni fisiche.
+Una rete ordinaria può imparare direttamente “geometria → parametri S”. La rete proposta rappresenta anche i campi, così da poter valutare direttamente le equazioni fisiche:
 
-Per applicare direttamente Maxwell, la rete deve rappresentare i campi elettrici e magnetici, non soltanto produrre un numero finale come la frequenza centrale.
+$$
+(\mathbf r,f,\mathbf g,\mathbf m,p)
+\longmapsto
+(\widehat{\mathbf E},\widehat{\mathbf H}).
+$$
 
-La funzione da minimizzare, detta *loss*, può avere questa struttura:
+- $\mathbf r$: posizione nello spazio;
+- $f$: frequenza;
+- $\mathbf g$: parametri geometrici;
+- $\mathbf m$: proprietà dei materiali;
+- $p$: porta eccitata;
+- $\mathbf E,\mathbf H$: campi elettrico e magnetico complessi.
 
-\[
-\mathcal{L}
-=
-\lambda_d\,\mathcal{L}_{dati}
-+
-\lambda_M\,\mathcal{L}_{Maxwell}
-+
-\lambda_b\,\mathcal{L}_{bordi}
-\]
+La proposta iniziale usa una rete fully connected (**MLP**) con **Fourier features**, cioè trasformazioni sinusoidali degli input che possono aiutare a rappresentare variazioni oscillanti. Rami distinti per aria e substrato permettono di trattare le interfacce; le condizioni di raccordo devono comunque essere imposte.
 
-| Termine | Domanda a cui risponde |
-|---|---|
-| Errore sui dati | Le previsioni coincidono con le simulazioni disponibili? |
-| Errore su Maxwell | I campi previsti rispettano le equazioni nei punti controllati? |
-| Errore ai bordi | Il modello rispetta porte, superfici e interfacce? |
+I parametri S si ricavano dai campi alle porte tramite proiezione sui modi di propagazione. Non basta leggere il campo in un punto: normalizzazione, eccitazione e piani di riferimento devono coincidere con il solver.
 
-I coefficienti \(\lambda\) bilanciano l’importanza dei termini, dopo opportuna normalizzazione.
+La funzione di errore da minimizzare può essere:
 
-**Perché potrebbe aiutare?** Molte funzioni possono riprodurre pochi esempi. Le equazioni fisiche restringono le possibilità e possono guidare l’apprendimento anche dove mancano dati.
+$$
+\mathcal L=
+\lambda_S\mathcal L_S+
+\lambda_M\mathcal L_{Maxwell}+
+\lambda_B\mathcal L_{bordi/interfacce}
++\lambda_F\mathcal L_{campi}.
+$$
 
-**Perché non è una garanzia?** Una rete può ridurre alcuni errori trascurandone altri. Inoltre, rispettare le equazioni in un insieme di punti non significa risolvere accuratamente tutto il problema. La letteratura documenta difficoltà di ottimizzazione delle PINN anche su equazioni relativamente semplici. :chatgpt-content-reference{index="1"}
+L'ultimo termine si usa se esistono campioni di campo etichettati. I termini vanno normalizzati e bilanciati, altrimenti uno può dominare gli altri soltanto per la scala numerica.
 
-Nel nostro progetto, **il beneficio della PINN va confrontato sperimentalmente con una rete addestrata soltanto sui dati.**
+Un **residuo** è la discrepanza ottenuta sostituendo i campi previsti in un'equazione. In una regione senza sorgenti impresse, con convenzione temporale $e^{j\omega t}$, due residui sono:
 
----
+$$
+\mathbf r_E=\nabla\times\widehat{\mathbf E}+j\omega\mu\widehat{\mathbf H},
+\qquad
+\mathbf r_H=\nabla\times\widehat{\mathbf H}-(\sigma+j\omega\varepsilon)\widehat{\mathbf E}.
+$$
 
-**6. La parte simbolica: regole esplicite di progetto**
+Qui $\omega=2\pi f$, $\mu$ è la permeabilità, $\varepsilon$ la permittività e $\sigma$ la conducibilità. Si aggiungono condizioni fisiche e di bordo appropriate al problema. Un residuo basso nei punti controllati **non garantisce** un errore basso ovunque; contano anche campionamento, stabilità e condizioni ai bordi. Le difficoltà di training delle PINN sono documentate [5].
 
-La componente **simbolica** rappresenta conoscenza tramite regole, relazioni e vincoli leggibili.
+#### 7.2 Le regole simboliche
 
-Esempi:
+Una regola è un requisito con nome, ambito e criterio verificabile. Esempi concettuali:
 
-- la larghezza di una pista deve superare il minimo produttivo;
-- due elementi devono avere una determinata connessione;
-- il circuito deve stare nell’area disponibile;
-- il materiale deve appartenere a un catalogo ammesso.
+| ID | Significato | Uso |
+|---|---|---|
+| `GEOM_MIN_GAP` | Distanza minima fra piste | Escludere candidati nominali non fabbricabili |
+| `RF_PASSBAND_IL` | Perdita massima in banda | Calcolare quanto manca al limite |
+| `RF_PASSBAND_RL` | Return loss minimo in banda | Identificare frequenze critiche |
+| `RF_STOPBAND` | Attenuazione richiesta fuori banda | Individuare violazioni o incertezza |
 
-Una regola elementare potrebbe essere:
+I limiti reali vanno concordati. Un esempio **esclusivamente didattico**: con un massimo di 1,5 dB di insertion loss, una previsione di 1,4 dB ha un margine di appena 0,1 dB. Se la sua incertezza è comparabile al margine, è prudente richiedere una verifica full-wave.
 
-\[
-\text{larghezza della pista}\geq \text{minimo fabbricabile}
-\]
+Questo esempio non è una specifica Huawei e non rappresenta un intervallo statistico garantito.
 
-L’integrazione di modelli neurali con conoscenza strutturata è il principio generale della programmazione neuro-simbolica. :chatgpt-content-reference{index="2"}
+#### 7.3 Il controller proposto
 
-**Perché aiuta?** Esclude candidati che sarebbero inutili prima di spendere tempo per valutarli.
+Un possibile criterio sperimentale di priorità è:
 
-Ma occorre essere precisi su quanto questo sia innovativo: **aggiungere semplici limiti numerici a un ottimizzatore è già pratica comune.** La proposta diventa più interessante se la componente simbolica gestisce anche una grammatica delle strutture, connessioni e scelte discrete, interagendo con il modello neurale.
+$$
+a(\mathbf g)=
+\max_j\frac{u_j(\mathbf g)}{|m_j(\mathbf g)|+\epsilon}
++\alpha\,\widetilde r_M(\mathbf g).
+$$
 
-**Problema principale:** regole troppo restrittive possono escludere progetti validi e migliori. E una geometria fabbricabile può comunque avere pessime prestazioni RF.
+$m_j$ è il margine normalizzato del requisito $j$, positivo quando conforme. $u_j$ indica l'incertezza di quel margine. $\widetilde r_M$ è un residuo fisico normalizzato, $\epsilon$ evita divisioni per zero e $\alpha$ bilancia i criteri. Per le regole su una banda si considera il margine peggiore sulla griglia di frequenze, con raffinamento se necessario.
 
----
+Il rapporto incertezza/margine esprime una logica già nota nell'apprendimento attivo. **La formula è un'ipotesi operativa da confrontare, non una nuova formula dimostrata né un bound dell'errore.** Il contributo candidato riguarda l'integrazione con residui fisici e tracciamento dei requisiti.
 
-**7. Active learning e robustezza: dove spendere i calcoli**
-
-L’**active learning** consiste nello scegliere quali nuovi esempi vale la pena calcolare con il solver.
-
-Se il modello conosce già bene una regione, ulteriori simulazioni simili possono aggiungere poco. Conviene investigare anche:
-
-- geometrie promettenti;
-- zone con pochi dati;
-- casi vicini al limite fra successo e fallimento.
-
-Un *ensemble*, cioè più reti addestrate separatamente, può fornire un indizio di incertezza: se le reti discordano, il caso merita attenzione. **Se concordano, però, potrebbero comunque sbagliare tutte nello stesso modo.**
-
-Poi studiamo la **robustezza produttiva**: per una geometria scelta, introduciamo molte piccole variazioni plausibili e stimiamo quante versioni continuano a rispettare le specifiche.
-
-\[
-\widehat{\text{yield}}
-=
-\frac{\text{varianti che rispettano tutte le specifiche}}
-{\text{varianti valutate}}
-\]
-
-Esempio puramente didattico: 930 successi su 1.000 varianti danno una stima del 93%.
-
-Questa stima ha due fonti diverse di errore:
-
-1. **Errore statistico:** abbiamo provato un numero finito di varianti.
-2. **Errore del surrogate:** alcune varianti potrebbero essere classificate male.
-
-Aumentare le valutazioni della rete riduce il primo problema, ma **non elimina il secondo**. Servono controlli indipendenti con il solver e, per verificare il dispositivo reale, misure su prototipi.
-
----
-
-**8. Quando conviene davvero?**
-
-Il tempo dell’AI va contato interamente:
-
-\[
-T_{\mathrm{AI}}
-=
-T_{\mathrm{dati}}
-+
-T_{\mathrm{training}}
-+
-T_{\mathrm{ricerca}}
-+
-T_{\mathrm{verifiche}}
-\]
-
-Se servono poche valutazioni, costruire il surrogate potrebbe costare più delle simulazioni che risparmia. Il vantaggio emerge quando il modello viene riutilizzato abbastanza.
-
-Anche qui la velocità va confrontata **a parità di qualità del risultato**, non soltanto confrontando il tempo di una previsione con quello di una simulazione.
-
-| Rischio | Come lo verifichiamo |
-|---|---|
-| La PINN costa più di quanto faccia risparmiare | Misuriamo il tempo totale, incluso training |
-| L’ottimizzatore sfrutta errori della rete | Verifichiamo i candidati migliori con il solver |
-| Le regole eliminano buone soluzioni | Confrontiamo la ricerca con e senza regole |
-| Il modello sbaglia vicino alle soglie | Testiamo specificamente quelle regioni |
-| Le tolleranze ipotizzate sono irrealistiche | Usiamo dati di processo o dichiariamo le ipotesi |
-| Il filtro simulato differisce da quello reale | Fabbrichiamo e misuriamo prototipi |
-
-**Il primo esperimento che farei è piccolo:** una sola famiglia di filtri, pochi parametri geometrici e un solver di riferimento verificato. Confronterei un modello semplice, una rete neurale e una PINN sugli stessi dati. Aggiungerei poi regole simboliche e active learning, misurando il contributo di ogni elemento.
-
-La domanda scientifica del progetto diventa quindi: **“Quali di questi componenti riducono realmente il costo per ottenere un filtro accuratamente verificato e robusto?”** È una domanda a cui possiamo rispondere con esperimenti riproducibili.
-
-
-
-
-
-
-**Non è un approccio totalmente nuovo, e non ho copiato la proposta da un singolo progetto.** Ho combinato metodi già presenti nella letteratura, adattandoli al bando. La definizione corretta, al momento, è **proposta di integrazione da sviluppare e validare**.
-
-Devo anche precisare un limite del lavoro svolto: **ho verificato la plausibilità tecnica, ma non ho effettuato una ricerca sistematica di anteriorità**. Non possiamo quindi affermare che nessuno abbia già realizzato una combinazione molto simile.
-
-| Elemento della proposta | Situazione |
-|---|---|
-| Reti neurali come surrogate di simulatori EM | Già utilizzate |
-| Inverse design elettromagnetico tramite AI | Già utilizzato |
-| PINN e neural operator | Metodi già esistenti |
-| Vincoli geometrici e produttivi nell’ottimizzazione | Pratica consolidata |
-| Active learning e analisi delle tolleranze | Metodi già esistenti |
-| Integrazione specifica proposta per il filtro | Novità **non ancora accertata** |
-
-Per esempio, il lavoro di Augenstein e colleghi utilizza già un neural operator come surrogate per l’inverse design elettromagnetico tridimensionale. Sarebbe quindi scorretto presentare quella parte come una nostra invenzione. :chatgpt-content-reference{index="0"} Anche l’idea generale di combinare reti neurali e conoscenza simbolica precede questa proposta. :chatgpt-content-reference{index="1"}
-
-**Usare tecniche esistenti, citandole, non significa copiare.** Molta ricerca introduce un metodo migliore per combinarle, risolve un problema prima non affrontato oppure dimostra un vantaggio che prima non era documentato. Però mettere insieme diverse tecnologie non costituisce automaticamente un contributo originale.
-
-Nel nostro caso, una possibile direzione originale sarebbe:
-
-> Studiare un sistema in cui regole esplicite sulla struttura e sulla fabbricazione guidano sia la generazione delle geometrie sia la scelta delle nuove simulazioni, per migliorare la robustezza produttiva con un budget limitato.
-
-Anche questa è **un’ipotesi di contributo**, non una novità dimostrata. Per sostenerla dovremmo:
-
-1. Cercare lavori vicini su filtri RF, progettazione neuro-simbolica e ottimizzazione delle tolleranze.
-2. Identificare una differenza precisa nel nostro algoritmo.
-3. Dimostrare con esperimenti che quella differenza produce un beneficio rispetto ai metodi esistenti.
-
-**Il deck attuale presenta una proposta tecnicamente motivata, ma non dimostra originalità scientifica.** Avrei dovuto rendere questa distinzione più esplicita fin dall’inizio. Prima di presentarla come innovazione, il passo necessario è confrontarla con i lavori più vicini e definire esattamente quale contributo vogliamo rivendicare.
-
----
-
-# English version
+Un ensemble di reti può stimare l'incertezza tramite il disaccordo fra modelli. Più reti concordi possono però sbagliare tutte: occorrono calibrazione e audit indipendenti. Il residuo si valuta anche su punti fisici non usati nel training.
 
 ![Workflow](TECHARENA_2026_Workflow.png)
 
-**The proposal has a scientifically plausible logic, but we have not yet demonstrated that it works on our RF filter.** The deck describes a research project: the numerical advantages are objectives to be verified.
+<a id="it-potential"></a>
+### 8. Perché l'approccio ha potenzialità
 
-The previous response introduced several concepts too quickly. Let us start from the physical problem, then we will see what each technology adds.
+| Meccanismo | Beneficio possibile | Condizione da verificare |
+|---|---|---|
+| Riutilizzo del surrogate | Molte valutazioni rapide dopo il training | Servono abbastanza valutazioni per ammortizzare il costo iniziale |
+| Loss fisica | Riduzione delle soluzioni incompatibili con il problema | Training stabile e formulazione corretta |
+| Regole geometriche | Meno valutazioni di candidati inutilizzabili | Regole corrette e non eccessivamente restrittive |
+| Campionamento vicino ai requisiti | Dati concentrati dove cambiano le decisioni RF | Il criterio deve trovare davvero casi informativi |
+| Residuo fisico nella priorità | Individuazione di casi trascurati dall'incertezza | Il residuo deve aggiungere informazione utile sull'errore |
+| Registro delle decisioni | Esperimenti più riproducibili e interpretabili | Il registro deve descrivere il criterio reale, non spiegazioni inventate |
 
-**1. What do we want to build?**
+Un beneficio di ciascun componente è plausibile; non segue che la loro somma batta un buon GPR o Neuro-TF. Il controller e l'ensemble aggiungono costo.
 
-A **radio-frequency filter**, i.e., a component that allows some frequencies to pass while attenuating others.
+$$
+T_{totale}=T_{dati}+T_{training}+T_{ricerca}+T_{verifiche}.
+$$
 
-Imagine wanting to receive a radio station: the filter helps select the part of the signal that matters. In our case it is a circuit made of metal traces on an insulating material, called a *substrate*. This technology is called **microstrip**.
+Il tempo di inferenza da solo non misura il vantaggio del progetto. Vanno riportati anche CPU/GPU, memoria e numero di riutilizzi necessario a raggiungere il pareggio.
 
-Its behavior depends on:
+<a id="it-validation"></a>
+### 9. Cosa misurare e validare
 
-| Element | Effect on the device |
+#### 9.1 Confronti necessari
+
+Confrontare full-wave convenzionale, FGSA + Kriging, Neuro-TF, workflow GPR ibrido [3], PINN con acquisizione solo basata sull'incertezza e sistema completo. I metodi devono avere accesso ai dati dichiarato, dominio comparabile e regole geometriche coerenti.
+
+Se non sono disponibili sensibilità EM, una baseline Neuro-TF semplificata va identificata come tale. Il costo di ottenere campi e sensitività rientra nel confronto. Usare più seed e budget crescenti, non una sola esecuzione favorevole.
+
+#### 9.2 Metriche e target iniziali
+
+**I valori seguenti sono obiettivi di ricerca proposti nel pitch, non risultati ottenuti né prestazioni garantite.**
+
+| Metrica | Target iniziale | Riferimento |
+|---|---|---|
+| Errore relativo medio sulla matrice S complessa | ≤2% | Test full-wave indipendente |
+| Errore assoluto sullo yield | ≤3 punti percentuali | Monte Carlo full-wave con precisione statistica adeguata |
+| Numero di nuove chiamate full-wave | ≥50% in meno | Workflow GPR ibrido a qualità comparabile; target ambizioso |
+| Tempo totale | ≥3× più rapido | Workflow full-wave convenzionale, includendo training e dati |
+| Tempo di uno sweep dopo il training | ≥100× più rapido | Identico sweep full-wave; il solo costo online |
+
+Una definizione esplicita dell'errore S è:
+
+$$
+E_S=\frac{100}{N}\sum_{i=1}^{N}
+\frac{\|\widehat{\mathbf S}_i-\mathbf S_i^{FW}\|_F}
+{\max(\|\mathbf S_i^{FW}\|_F,\epsilon_S)}.
+$$
+
+Per ogni geometria $i$, si aggregano tutte le frequenze e tutte le componenti S valutate. La norma è la radice della somma dei moduli al quadrato. $\epsilon_S$ è una soglia numerica prefissata e dichiarata. Evitare errori percentuali calcolati separatamente vicino agli zeri di una singola componente S.
+
+L'errore medio va accompagnato da errori elevati/peggiori e dai **falsi accettati**: varianti previste conformi che il solver giudica non conformi. Specificare il denominatore delle percentuali: tutti i campioni oppure solo quelli previsti conformi.
+
+Per lo yield, distinguere errore statistico Monte Carlo ed errore del surrogate. Un riferimento con intervalli di confidenza troppo ampi non può confermare un miglioramento di pochi punti percentuali.
+
+#### 9.3 Esperimenti di rimozione dei componenti
+
+Un'**ablation** rimuove un ingrediente mantenendo il resto il più possibile invariato:
+
+1. Togliere la loss Maxwell per misurare il contributo della fisica al training.
+2. Togliere il residuo dalla selezione per misurarne il valore nell'active learning.
+3. Usare acquisizione solo basata sull'incertezza, mantenendo gli stessi vincoli geometrici.
+4. Confrontare l'aggregazione per requisito con un criterio globale, e misurare separatamente l'utilità del registro decisionale.
+
+L'audit non migliora automaticamente l'accuratezza: il suo beneficio può essere soprattutto la tracciabilità. Una conclusione negativa è comunque utile: se un metodo più semplice è migliore, va riportato.
+
+<a id="it-risks"></a>
+### 10. Rischi, limiti e contromisure
+
+| Rischio | Perché succede | Controllo previsto |
+|---|---|---|
+| PINN difficile da addestrare | Oscillazioni, interfacce e loss sbilanciate | Normalizzazione, campionamento mirato e benchmark semplice iniziale |
+| Residuo basso ma risposta errata | Punti di controllo insufficienti o bordi modellati male | Residui su punti nuovi e confronto full-wave indipendente |
+| Incertezza troppo ottimistica | Reti con errori comuni | Calibrazione, campioni casuali di audit, quota di esplorazione |
+| Ottimizzazione che sfrutta errori del surrogate | La ricerca trova previsioni favorevoli ma scorrette | Verifica dei finalisti con il solver |
+| Generalizzazione fuori dominio | Nuovi materiali o geometrie lontane dal training | Dominio dichiarato e ritorno al solver |
+| Sensitività errate nonostante piccoli errori medi | Derivate più difficili da approssimare | Confronto con perturbazioni full-wave o sensitività di riferimento |
+| Yield irrealistico | Distribuzioni produttive sbagliate o campioni esclusi impropriamente | Dati di processo, correlazioni esplicite e denominatore corretto |
+| Costo totale maggiore dei baseline | Training, ensemble e controlli troppo costosi | Contabilità end-to-end e criterio di arresto |
+| Divario fra simulazione e realtà | Materiali, connettori, rugosità o altri effetti trascurati | Misure su prototipi in una fase successiva |
+
+La conformità ai vincoli geometrici può essere verificata esattamente entro la rappresentazione usata. La correttezza elettromagnetica continua a richiedere verifica numerica e, per il componente reale, sperimentale.
+
+<a id="it-plan"></a>
+### 11. Piano di implementazione e dati necessari
+
+| Fase | Attività | Risultato che abilita il passo successivo |
+|---|---|---|
+| 1. Specifiche | Fissare filtro, dominio, requisiti e tolleranze | Problema riproducibile e budget concordato |
+| 2. Riferimento | Automatizzare il solver e verificarne la convergenza | Dataset coerente e test indipendente |
+| 3. Baseline | Implementare modelli semplici e metodi pertinenti | Limite minimo di qualità/costo da superare |
+| 4. PINN | Addestrare il modello di campi e validare i parametri S | Accuratezza sufficiente nel dominio |
+| 5. Controller | Aggiungere regole, priorità e registro delle decisioni | Ciclo simulazione-training funzionante |
+| 6. Benchmark | Studiare ablation, sensitività, yield e costi | Evidenza a favore o contro la proposta |
+| 7. Dimostrazione | Ottimizzare e verificare un filtro | Progetto numericamente verificato; prototipo opzionale |
+
+**Stack previsto:** Python/PyTorch per rete e derivate automatiche, un modulo Python per i predicati, scripting del solver disponibile per CAD e simulazioni, formati numerici aperti per dati e configurazioni. L'accesso a solver, licenze e risorse va confermato. Questo README non include ancora comandi di installazione perché non è stata implementata una pipeline eseguibile.
+
+**Dati da richiedere:** parametri CAD e unità, geometrie ricostruibili, materiali anche dispersivi se rilevanti, definizioni e normalizzazioni delle porte, banda e griglia in frequenza, parametri S complessi, impostazioni di mesh e bordi, campioni di campo quando disponibili, distribuzioni e correlazioni delle tolleranze.
+
+Il solo file dei parametri S non basta a definire il problema Maxwell. I campi etichettati sono utili ma opzionali in una loss ibrida; geometria, materiali ed eccitazione restano indispensabili.
+
+**Uso su GitHub:** il README è autonomo e contiene diagrammi Mermaid. Non implica che codice, dataset o prototipi esistano già. Pubblicare soltanto materiale e dati per cui si dispone dell'autorizzazione; i documenti del mentor contrassegnati come riservati non sono inclusi qui. Prima di distribuire codice, scegliere una licenza: il README non ne assegna automaticamente una.
+
+<a id="it-glossary"></a>
+### 12. Glossario e domande frequenti
+
+| Termine | Significato |
 |---|---|
-| Trace length | Affects the resonance frequencies |
-| Distance between traces | Affects coupling and the filter bandwidth |
-| Insulating material | Affects field propagation |
-| Material losses | Reduce the useful transmitted power |
+| EM | Elettromagnetico |
+| Full-wave | Modellazione numerica dei campi con le equazioni di Maxwell |
+| Surrogate | Modello approssimato usato per valutazioni rapide |
+| PINN | Rete addestrata anche tramite equazioni fisiche |
+| Parametrico | Condizionato da geometria/materiali, riutilizzabile entro un dominio |
+| GPR / Kriging | Famiglia di modelli statistici per interpolazione e regressione |
+| Neuro-TF | Rete neurale collegata a una rappresentazione a funzione di trasferimento |
+| FGSA | Fast Global Sensitivity Analysis, analisi rapida delle direzioni influenti |
+| Active learning | Scelta adattiva dei nuovi esempi da acquisire |
+| Residuo | Discrepanza rispetto a un'equazione |
+| Predicato | Regola valutabile su una geometria o una risposta |
+| Ensemble | Insieme di modelli le cui previsioni vengono confrontate |
+| Yield | Probabilità di rispettare tutte le specifiche considerate |
+| Baseline | Metodo di riferimento con cui confrontare la proposta |
+| Ablation | Esperimento che rimuove un componente per misurarne l'effetto |
 
-For some resonant structures, an approximate relation is:
+**È tutto nuovo?** No. Le tecniche hanno precedenti; l'integrazione e il suo beneficio sono il contributo candidato.
 
-\[
-f_{\mathrm{resonance}}\propto \frac{1}{L\sqrt{\varepsilon_{\mathrm{eff}}}}
-\]
+**Una PINN risolve Maxwell esattamente?** Non in generale. Riduce residui e altri errori, con accuratezza da verificare.
 
-Here $L$ is a characteristic length and $\varepsilon_{\mathrm{eff}}$ represents the effect of the material on propagation.
+**Perché una rete se ho già il solver?** Per ammortizzare il training su molte valutazioni. Con poche richieste potrebbe non convenire.
 
-Keeping the material fixed, a greater length tends to lower the frequency. In the simplified model, a 1% increase in $L$ produces roughly a 1% decrease in frequency.
+**Serve un LLM?** No. Il controller iniziale usa predicati e criteri numerici espliciti.
 
-This already explains a concrete problem: **a small fabrication error can shift the filter response.**
+**Un residuo alto significa certamente risposta RF sbagliata?** No. È un indicatore da confrontare con l'errore reale; può essere scarsamente correlato alla quantità d'interesse.
 
----
+**Esiste già un digital twin operativo?** No. La proposta riguarda un surrogate numerico; un gemello digitale operativo richiederebbe anche collegamento e aggiornamento con dati del dispositivo reale.
 
-**2. How is design done without AI?**
-
-A geometry is drawn and an **electromagnetic simulator**, also called a *solver*, is used to calculate how electric and magnetic fields behave.
-
-The solver numerically solves **Maxwell’s equations**, which describe the relationships between fields, charges, and currents. Materials, excitation, and boundary conditions for the simulation domain are also required.
-
-The designer changes the dimensions and repeats the simulation until the response meets the specifications.
-
-Two important results are:
-
-- **$S_{21}$:** describes signal transmission from input to output.
-- **$S_{11}$:** describes signal reflection back to the input.
-
-In the useful band we generally want high transmission and low reflection.
-
-**Why look for another method?** A simulation can be expensive, especially when you must repeat it for many geometries and manufacturing variations. The solver is also an approximation: its accuracy depends on discretization, materials, and imposed conditions.
+**Cosa conterebbe come successo?** Evidenza riproducibile di minore costo a qualità comparabile, più una descrizione chiara del dominio in cui il metodo è affidabile.
 
 ---
 
-**3. The full workflow**
+<a id="english"></a>
+## English
 
-The system would have two phases: first it builds a fast model, then it uses it to search for better designs.
+### Reading path
+
+1. [Project overview](#en-overview)
+2. [The device and basic concepts](#en-basics)
+3. [The design and tolerance problem](#en-problem)
+4. [Existing solutions](#en-existing)
+5. [The proposal and candidate contribution](#en-proposal)
+6. [The workflow step by step](#en-workflow)
+7. [How the PINN and symbolic rules work](#en-model)
+8. [Why the approach has potential](#en-potential)
+9. [What must be measured and validated](#en-validation)
+10. [Risks, limitations and mitigations](#en-risks)
+11. [Implementation plan and required data](#en-plan)
+12. [Glossary and frequently asked questions](#en-glossary)
+
+<a id="en-overview"></a>
+### 1. Project overview
+
+We want to design a radio-frequency filter that performs well even when manufacturing introduces small differences in dimensions or materials.
+
+Today, each variant can be checked with an accurate electromagnetic simulator. The challenge is the cost of repeating these calculations many times. The proposed system uses a neural network to evaluate many variants quickly and explicit rules to decide which cases require another reference simulation.
+
+The research question is:
+
+> Can we select more useful simulations by combining RF requirements, predictive uncertainty and discrepancies with Maxwell's equations, while maintaining sufficient accuracy and reducing total cost?
+
+Neural networks, rules and adaptive sampling all have precedents. The candidate contribution is their integration into a controller that also records **which requirement and which indicator motivated each new simulation**. Its usefulness and specific originality remain to be established.
+
+<a id="en-basics"></a>
+### 2. The device and basic concepts
+
+#### 2.1 What is an RF filter?
+
+A **radio-frequency (RF) filter** passes some frequencies and attenuates others. A radio is a useful analogy: receiving one station requires distinguishing the wanted signal from other signals. A band-pass filter provides frequency selection, although it is not a complete receiver by itself.
+
+The planned demonstrator is a **three-resonator microstrip band-pass filter**: metal traces supported by an insulating substrate, with a ground plane. Resonators are structures that respond particularly strongly around certain frequencies.
+
+The initial experiment keeps the arrangement of elements, or **topology**, fixed. Six geometry parameters vary: three resonator lengths, one shared trace width and two inter-resonator gaps. Substrate thickness and permittivity are additional model parameters. This is a proposed scope, subject to confirmation against available data.
+
+| Concept | Plain explanation | Why it matters |
+|---|---|---|
+| Frequency | Oscillations per second, measured in hertz | Determines which signals pass through the filter |
+| Passband | Frequency interval intended for transmission | Forms part of the design specification |
+| Substrate | Insulating material supporting the traces | Affects propagation and losses |
+| Permittivity | A material's electrical response property | Can shift characteristic frequencies |
+| Coupling | Electromagnetic interaction between elements | Influences the response shape |
+| Losses | Energy dissipated or not transferred to the intended load | Reduce device efficiency |
+
+For some resonant structures, a useful approximation is:
+
+$$
+f_0 \propto \frac{1}{L\sqrt{\varepsilon_{\mathrm{eff}}}}.
+$$
+
+Here, $L$ is a characteristic length and $\varepsilon_{\mathrm{eff}}$ represents the combined effect of the surrounding materials on propagation. **This is an approximation, not the complete filter equation.** It suggests that a longer trace tends to lower the resonance frequency when other conditions are unchanged.
+
+#### 2.2 How do we describe the filter response?
+
+**Scattering parameters**, or **S-parameters**, describe incident, reflected and transmitted waves at the device ports.
+
+- $S_{11}$ describes reflection at the input port.
+- $S_{21}$ describes transmission from input to output.
+- The full two-port S-matrix also contains $S_{12}$ and $S_{22}$.
+
+They are complex quantities containing **magnitude and phase**. We generally want high transmission and low reflection in the passband. The project models complex values, not only magnitude curves.
+
+With consistent port normalization:
+
+$$
+\mathrm{IL}=-20\log_{10}|S_{21}|,\qquad
+\mathrm{RL}=-20\log_{10}|S_{11}|.
+$$
+
+IL is insertion loss: lower values are generally desirable in the passband. RL is return loss: higher values mean less reflection. RL must not be confused with $20\log_{10}|S_{11}|$, which has the opposite sign.
+
+<a id="en-problem"></a>
+### 3. The design and tolerance problem
+
+#### 3.1 The conventional approach
+
+A **full-wave solver** calculates electric and magnetic fields by numerically solving Maxwell's equations. HFSS and CST are examples of tools that could be used.
+
+A typical process is:
+
+1. Define geometry, materials, ports and excitation.
+2. Divide the domain into elements or cells: the **mesh**.
+3. Calculate the response over a frequency grid.
+4. Check whether the specifications are satisfied.
+5. Adjust dimensions and repeat.
+
+The solver is a numerical reference, not an exact truth. Its accuracy depends on the mesh, boundary conditions, material models and frequency resolution. Convergence checks are necessary before treating its results as reference data.
+
+#### 3.2 Why is a good nominal design insufficient?
+
+Manufacturing introduces variations: a trace may be wider, a gap narrower or a substrate property different from its nominal value. A design that performs well in its nominal configuration may then fail its requirements.
+
+**Sensitivity** describes how much a response changes when a parameter changes. **Robustness** concerns preserving performance under variations. **Yield** is the probability of satisfying all the specifications being considered.
+
+**Monte Carlo analysis** draws many variants from tolerance distributions and evaluates each one. For example, 930 successful variants out of 1,000 produce a 93% yield estimate. This is a teaching example, not a project result.
+
+$$
+\widehat Y=\frac{1}{N}\sum_{i=1}^{N}\mathbf{1}\{\text{all specifications are met by variant }i\}.
+$$
+
+Running a full-wave simulation for every variant can be expensive. A small prediction error near an RF limit can also reverse a pass/fail decision, even when average response error looks acceptable.
+
+<a id="en-existing"></a>
+### 4. Existing solutions
+
+A **surrogate** is an approximate model that is faster than the simulator it replaces for some evaluations. Think of building a map from a set of measurements instead of surveying the entire territory again for each question.
+
+| Method | How it works | What must be checked |
+|---|---|---|
+| Circuit and equivalent models | Simplify a device into physical elements and relationships | Simplifications may omit relevant EM effects |
+| Interpolation / response surfaces | Approximate responses between known examples | Narrow resonances and many parameters make modelling difficult |
+| Kriging / Gaussian Process Regression (GPR) | Predict a response and model-dependent uncertainty | Uncertainty depends on assumptions and requires validation |
+| FGSA and reduced domains | Identify influential directions and focus modelling on useful regions | Excluded regions or directions may still matter for tolerances |
+| Supervised neural networks | Learn input-to-response relationships from examples | May need substantial data and fail outside the training domain |
+| Neuro-TF | Combines neural networks with transfer-function representations | The response structure must be identified appropriately |
+| PINNs | Train a network using data and physical-equation residuals | Training can be difficult; physics does not automatically certify accuracy |
+| Hybrid yield methods | Use a surrogate and selectively re-evaluate samples with a solver | Sample selection and error control are essential |
+
+**Four particularly relevant precedents:**
+
+- **[1] FGSA and pre-screening:** Koziel and Pietrenko-Dabrowska reduce and confine the model domain to improve microwave-component modelling.
+- **[2] Neuro-TF:** Feng and colleagues incorporate EM sensitivity information and response features into transfer-function surrogate optimization for filters.
+- **[3] Hybrid GPR yield estimation:** Fuhrländer and Schöps evaluate many Monte Carlo samples with a surrogate and selectively re-evaluate critical samples with a high-fidelity model. This is the closest precedent for our verification loop.
+- **[4] hPINNs:** Lu and colleagues investigate inverse design with PINNs and constraints, demonstrating optical and fluid-flow examples. This does not establish superiority for microstrip filters.
+
+These are not universal solutions, but they are important comparisons for a credible assessment. **Selective solver re-evaluation is not an invention of this project.**
+
+<a id="en-proposal"></a>
+### 5. The proposal and candidate contribution
+
+The proposed system has three parts:
+
+| Part | Responsibility | Relationship to existing work |
+|---|---|---|
+| Parametric PINN | Predict fields and S-parameters across a family of geometries | Existing principle; RF implementation still to develop |
+| Symbolic rules | Represent geometry and RF requirements explicitly | Rules and constraints are established concepts |
+| Simulation controller | Use requirement margins, uncertainty and physics residuals to request new simulations and log their reasons | Candidate integration to implement, compare and validate |
+
+Here, **neuro-symbolic** means a neural model operating together with readable, executable rules. It does not mean human-like reasoning or formal proof of device correctness. The general framework has precedents in neuro-symbolic research [6].
+
+The candidate difference from the GPR workflow in [3] is a controller that ties decisions to identifiable RF requirements and incorporates Maxwell residuals into sample selection. Experiments must isolate this contribution from merely replacing a GPR model with a neural network.
+
+We do not claim a new physical law, the invention of PINNs or an approach “never used before.” **The specific combination requires further prior-art investigation; superiority requires experiments.** Adding width and gap bounds to an optimizer alone would not constitute a scientific novelty.
+
+<a id="en-workflow"></a>
+### 6. The workflow step by step
 
 ```mermaid
 flowchart TD
-    A["Requirements and allowed geometries"] --> B["Initial simulations"]
-    B --> C["Train the fast model"]
-    C --> D["Optimizer proposes a geometry"]
-    D --> E{"Respects geometric rules?"}
-    E -->|No| D
-    E -->|Yes| F["AI estimates performance and tolerances"]
-    F --> G["Solver verifies selected cases"]
-    G --> H{"Accuracy and performance sufficient?"}
-    H -->|No: new data| C
-    H -->|Yes| I["Prototype and measurements"]
+    A["Specifications, geometries and tolerances"] --> B["Solver: initial reference data"]
+    B --> C["Train the parametric PINN"]
+    C --> D["Predictions and reliability indicators"]
+    A --> E["Proposed controller: RF rules and priorities"]
+    D --> E
+    E --> F["Solver: selected new cases"]
+    F --> C
+    D --> G["Tolerance sweeps and yield estimation"]
+    H["Independent test samples"] --> I["Comparison with full-wave results"]
+    G --> I
 ```
 
-Let us look at what each part of the AI means.
+**Step 1 - Define the problem.** Agree on the frequency band, RF limits, materials, geometry and tolerance distributions. Set a computational budget.
 
-**4. The neural network: learning a shortcut**
+**Step 2 - Build a reliable reference.** Generate solver examples after checking mesh and frequency convergence. Sample the parameter domain rather than only one favourable design region.
 
-A **neural network** is a mathematical function with many adjustable parameters. During training, these parameters change to reduce errors in the predicted responses.
+**Step 3 - Separate the data.** Create training, validation and test sets using complete geometries. Frequencies from the same geometry must not appear in both training and test sets.
 
-In our case:
+**Step 4 - Train the surrogate.** Learn from known responses and physical constraints. Use validation data for architecture and configuration choices; keep the final test set separate.
 
-\[
-\text{geometry + materials + frequency}
-\quad\longmapsto\quad
-\text{predicted electromagnetic response}
-\]
+**Step 5 - Evaluate new candidates.** First check the geometry rules for each nominal design. For feasible candidates, estimate responses, RF margins, uncertainty and physics residuals.
 
-The initial simulations provide examples of this relationship. After training, the network can estimate new responses without repeating all solver calculations.
+**Step 6 - Select new simulations.** Prioritize unreliable cases or cases near RF limits while retaining an exploration quota. Each simulation request records a readable reason.
 
-This is called a **surrogate**, i.e., an approximate substitute model.
+**Step 7 - Update and measure.** Add new simulation results to the training data. Compare methods under explicit budgets and accuracy criteria.
 
-**Why might it work?** If we consider a limited family of geometries, the relationship between parameters and response contains regular structures that a model can learn. There are published applications of neural surrogates for electromagnetic inverse design, including 3D cases. This demonstrates feasibility in certain cases, not automatic effectiveness on our filter. :chatgpt-content-reference{index="0"}
+**Step 8 - Study tolerances and design.** Use the surrogate for many sweeps, check yield on independent samples and optimize nominal dimensions. Verify final designs with the solver. Physical prototypes can follow later.
 
-**Main problem:** a network can be accurate on geometries similar to the ones studied and make large errors on very different geometries. This is why we declare an operating range and test geometries never used in training.
+> Rejecting an impossible nominal geometry during optimization is appropriate. Silently removing failing manufacturing variants from Monte Carlo analysis would bias yield estimates: count them consistently with the declared failure definition.
 
----
+<a id="en-model"></a>
+### 7. How the PINN and symbolic rules work
 
-**5. The PINN: teaching the physics too**
+#### 7.1 The parametric PINN
 
-A **Physics-Informed Neural Network**, or PINN, is trained while considering both data and physical equations.
+An ordinary neural network can learn “geometry → S-parameters” directly. The proposed network also represents fields, allowing explicit evaluation of physical equations:
 
-To directly apply Maxwell’s equations, the network must represent electric and magnetic fields, not just produce a final scalar such as a center frequency.
+$$
+(\mathbf r,f,\mathbf g,\mathbf m,p)
+\longmapsto
+(\widehat{\mathbf E},\widehat{\mathbf H}).
+$$
 
-The objective function, called the *loss*, may have the following structure:
+- $\mathbf r$: spatial position;
+- $f$: frequency;
+- $\mathbf g$: geometry parameters;
+- $\mathbf m$: material properties;
+- $p$: excited port;
+- $\mathbf E,\mathbf H$: complex electric and magnetic fields.
 
-\[
-\mathcal{L}
-=
-\lambda_d\,\mathcal{L}_{\mathrm{data}}
-+
-\lambda_M\,\mathcal{L}_{\mathrm{Maxwell}}
-+
-\lambda_b\,\mathcal{L}_{\mathrm{boundary}}
-\]
+The initial proposal uses a fully connected network (**MLP**) with **Fourier features**: sinusoidal input transformations that may help represent oscillatory behaviour. Separate air and substrate branches allow interface treatment, but the appropriate interface conditions must still be imposed.
 
-| Term | Question it answers |
+S-parameters are obtained by projecting port fields onto propagation modes. Reading a field at a single point is insufficient: normalization, excitation and reference planes must match the solver.
+
+A possible training objective is:
+
+$$
+\mathcal L=
+\lambda_S\mathcal L_S+
+\lambda_M\mathcal L_{Maxwell}+
+\lambda_B\mathcal L_{boundaries/interfaces}
++\lambda_F\mathcal L_{fields}.
+$$
+
+The final term is used when labelled field samples exist. Terms must be normalized and balanced; otherwise, one may dominate simply because of its numerical scale.
+
+A **residual** is the discrepancy obtained by substituting predicted fields into an equation. In a region without impressed sources, using the time convention $e^{j\omega t}$, two residuals are:
+
+$$
+\mathbf r_E=\nabla\times\widehat{\mathbf E}+j\omega\mu\widehat{\mathbf H},
+\qquad
+\mathbf r_H=\nabla\times\widehat{\mathbf H}-(\sigma+j\omega\varepsilon)\widehat{\mathbf E}.
+$$
+
+Here, $\omega=2\pi f$, $\mu$ is permeability, $\varepsilon$ is permittivity and $\sigma$ is conductivity. Additional physical and boundary conditions must match the problem. A small residual at sampled points **does not guarantee** small error everywhere; sampling, stability and boundary conditions also matter. PINN training difficulties are documented [5].
+
+#### 7.2 Symbolic rules
+
+A rule is a requirement with an identifier, scope and evaluable criterion. Conceptual examples:
+
+| ID | Meaning | Use |
+|---|---|---|
+| `GEOM_MIN_GAP` | Minimum spacing between traces | Reject unmanufacturable nominal candidates |
+| `RF_PASSBAND_IL` | Maximum passband insertion loss | Measure distance to the limit |
+| `RF_PASSBAND_RL` | Minimum passband return loss | Identify critical frequencies |
+| `RF_STOPBAND` | Required out-of-band attenuation | Detect violations or uncertainty |
+
+Actual limits must be agreed. A **teaching-only example**: with a maximum insertion loss of 1.5 dB, a 1.4 dB prediction has only 0.1 dB of margin. If uncertainty is comparable to that margin, a full-wave check is advisable.
+
+This is not a Huawei specification and does not imply a statistically guaranteed interval.
+
+#### 7.3 The proposed controller
+
+A possible experimental priority score is:
+
+$$
+a(\mathbf g)=
+\max_j\frac{u_j(\mathbf g)}{|m_j(\mathbf g)|+\epsilon}
++\alpha\,\widetilde r_M(\mathbf g).
+$$
+
+$m_j$ is the normalized margin for requirement $j$, positive when satisfied. $u_j$ measures uncertainty in that margin. $\widetilde r_M$ is a normalized physics residual, $\epsilon$ prevents division by zero and $\alpha$ balances the criteria. For band-wide rules, use the worst margin across the frequency grid and refine that grid when necessary.
+
+The uncertainty-to-margin ratio expresses an established active-learning idea. **This is an operational hypothesis to compare, not a proven new formula or an error bound.** The candidate contribution concerns its integration with physics residuals and requirement-level traceability.
+
+An ensemble can estimate uncertainty through disagreement between separately trained networks. Multiple networks can still agree and be wrong, so calibration and independent audits are necessary. Physics residuals should also be evaluated at points not used for training.
+
+![Workflow](TECHARENA_2026_Workflow.png)
+
+<a id="en-potential"></a>
+### 8. Why the approach has potential
+
+| Mechanism | Possible benefit | Condition to validate |
+|---|---|---|
+| Surrogate reuse | Many fast evaluations after training | Enough evaluations to amortize initial cost |
+| Physics loss | Fewer solutions inconsistent with the physical problem | Stable training and correct formulation |
+| Geometry rules | Fewer evaluations of unusable nominal designs | Correct rules that do not overrestrict the search |
+| Sampling near requirement limits | More data where RF decisions change | The selection criterion must find informative cases |
+| Physics residual in the priority score | Detection of cases missed by uncertainty estimates | The residual must provide useful extra information about error |
+| Decision log | More reproducible and interpretable experiments | Logs must reflect the actual criterion, not invented explanations |
+
+Each mechanism has a plausible benefit. Their combination does not automatically outperform a strong GPR or Neuro-TF baseline. The controller and ensemble also add computational cost.
+
+$$
+T_{total}=T_{data}+T_{training}+T_{search}+T_{verification}.
+$$
+
+Inference time alone is insufficient. Report CPU/GPU usage, memory and the number of model reuses needed to break even.
+
+<a id="en-validation"></a>
+### 9. What must be measured and validated
+
+#### 9.1 Required comparisons
+
+Compare conventional full-wave workflows, FGSA + Kriging, Neuro-TF, hybrid GPR yield estimation [3], a PINN with uncertainty-only acquisition and the complete system. Declare each method's data access, use comparable domains and apply consistent geometry rules.
+
+If EM sensitivities are unavailable, label any simplified Neuro-TF implementation accordingly. Count the cost of obtaining fields and sensitivities. Use multiple random seeds and increasing budgets, rather than reporting one favourable run.
+
+#### 9.2 Metrics and initial targets
+
+**These numbers are research targets proposed in the pitch, not measured results or performance guarantees.**
+
+| Metric | Initial target | Reference |
+|---|---|---|
+| Mean relative complex S-matrix error | ≤2% | Independent full-wave test set |
+| Absolute yield error | ≤3 percentage points | Full-wave Monte Carlo with adequate statistical precision |
+| New full-wave calls | ≥50% fewer | Hybrid GPR at comparable quality; an ambitious target |
+| Total time | ≥3× faster | Conventional full-wave workflow, including training and data generation |
+| Sweep time after training | ≥100× faster | Identical full-wave sweep; online cost only |
+
+An explicit definition of S-error is:
+
+$$
+E_S=\frac{100}{N}\sum_{i=1}^{N}
+\frac{\|\widehat{\mathbf S}_i-\mathbf S_i^{FW}\|_F}
+{\max(\|\mathbf S_i^{FW}\|_F,\epsilon_S)}.
+$$
+
+For each geometry $i$, aggregate all evaluated frequencies and S-matrix entries. The norm is the square root of the sum of squared magnitudes. $\epsilon_S$ is a predetermined and documented numerical floor. Avoid separate percentage errors near zeros of individual S-parameters.
+
+Complement average error with high-percentile/worst errors and **false acceptance**: variants predicted to pass that fail in the solver. State the denominator of any percentage, such as all samples or only predicted-pass samples.
+
+For yield, separate Monte Carlo statistical error from surrogate error. A reference estimate with broad confidence intervals cannot verify improvements of only a few percentage points.
+
+#### 9.3 Component-removal experiments
+
+An **ablation** removes one ingredient while holding the rest as constant as possible:
+
+1. Remove the Maxwell loss to measure the benefit of physics during training.
+2. Remove the residual from sample selection to measure its active-learning value.
+3. Use uncertainty-only acquisition while retaining identical geometry constraints.
+4. Compare requirement-level aggregation with a global criterion, and evaluate the decision log separately.
+
+Logging does not automatically improve prediction accuracy: its value may primarily be traceability. Negative findings are informative. If a simpler method is better, report that result.
+
+<a id="en-risks"></a>
+### 10. Risks, limitations and mitigations
+
+| Risk | Why it occurs | Planned control |
+|---|---|---|
+| Difficult PINN training | Oscillations, interfaces and unbalanced loss terms | Normalization, targeted sampling and a simple initial benchmark |
+| Small residual but wrong response | Insufficient control points or incorrect boundaries | Residual checks on new points and independent full-wave validation |
+| Overconfident uncertainty | Shared errors across networks | Calibration, random audit samples and exploration |
+| Optimization exploits surrogate errors | Search discovers favourable but incorrect predictions | Solver verification of finalists |
+| Out-of-domain failure | New materials or geometries far from training data | Explicit domain and solver fallback |
+| Wrong sensitivities despite small average error | Derivatives are harder to approximate accurately | Comparison with full-wave perturbations or reference sensitivities |
+| Unrealistic yield | Wrong manufacturing distributions or improperly excluded samples | Process data, explicit correlations and correct denominators |
+| Higher total cost than baselines | Expensive training, ensembles and checks | End-to-end accounting and stopping criteria |
+| Simulation-to-reality gap | Unmodelled material, connector, roughness or other effects | Physical prototype measurements in a later phase |
+
+Geometry constraints can be checked exactly within their encoded representation. Electromagnetic correctness still requires numerical verification and, for a real device, experimental validation.
+
+<a id="en-plan"></a>
+### 11. Implementation plan and required data
+
+| Phase | Work | Evidence needed to proceed |
+|---|---|---|
+| 1. Specifications | Define filter, domain, requirements and tolerances | Reproducible problem and agreed budget |
+| 2. Reference | Automate the solver and check convergence | Consistent data and independent test set |
+| 3. Baselines | Implement simple and relevant existing models | Quality/cost performance to improve upon |
+| 4. PINN | Train the field model and validate S-parameters | Sufficient in-domain accuracy |
+| 5. Controller | Add rules, priorities and decision logging | Working simulation-training loop |
+| 6. Benchmark | Evaluate ablations, sensitivities, yield and costs | Evidence for or against the proposal |
+| 7. Demonstration | Optimize and verify one filter | Numerically verified design; optional physical prototype |
+
+**Planned stack:** Python/PyTorch for networks and automatic differentiation, a Python predicate module, scripting for the available solver, and open numerical formats for data and configurations. Solver access, licences and compute resources must be confirmed. Installation commands are intentionally absent because an executable pipeline has not yet been implemented.
+
+**Required data:** CAD parameters and units, reconstructible geometries, material properties including dispersion where relevant, port definitions and normalization, frequency band and grid, complex S-parameters, mesh and boundary settings, field samples when available, and tolerance distributions/correlations.
+
+An S-parameter file alone does not define the Maxwell problem. Labelled fields are useful but optional in a hybrid loss; geometry, materials and excitation remain essential.
+
+**GitHub use:** this README is self-contained and includes Mermaid diagrams. It does not imply that implementation code, datasets or prototypes already exist. Publish only materials and data you are authorized to distribute; the mentor's restricted documents are not included here. Choose a licence before distributing code: this README does not automatically assign one.
+
+<a id="en-glossary"></a>
+### 12. Glossary and frequently asked questions
+
+| Term | Meaning |
 |---|---|
-| Data error | Do predictions match the available simulations? |
-| Maxwell error | Do the predicted fields satisfy the equations at the sampled points? |
-| Boundary error | Does the model respect ports, surfaces, and interfaces? |
+| EM | Electromagnetic |
+| Full-wave | Numerical field modelling using Maxwell's equations |
+| Surrogate | Approximate model used for fast evaluations |
+| PINN | Neural network trained partly through physical equations |
+| Parametric | Conditioned on geometry/materials and reusable within a domain |
+| GPR / Kriging | Related statistical approaches to interpolation and regression |
+| Neuro-TF | Neural network linked to a transfer-function representation |
+| FGSA | Fast Global Sensitivity Analysis of influential directions |
+| Active learning | Adaptive selection of new examples to acquire |
+| Residual | Discrepancy with an equation |
+| Predicate | Evaluable rule about a geometry or response |
+| Ensemble | Multiple models whose predictions are compared |
+| Yield | Probability of satisfying all considered specifications |
+| Baseline | Reference method used for comparison |
+| Ablation | Experiment removing a component to measure its effect |
 
-The coefficients $\lambda$ balance the importance of each term after appropriate normalization.
+**Is everything new?** No. The techniques have precedents; the integration and its benefits are the candidate contribution.
 
-**Why might it help?** Many functions can reproduce a few examples. Physical equations restrict the possibilities and can guide learning even where data are missing.
+**Does a PINN solve Maxwell's equations exactly?** Not in general. It minimizes residuals and other errors, with accuracy to be validated.
 
-**Why is it not a guarantee?** A network can reduce some errors while neglecting others. Also, satisfying the equations at a set of points does not guarantee an accurate solution across the entire problem. The literature documents optimization difficulties in PINNs even for relatively simple equations. :chatgpt-content-reference{index="1"}
+**Why use a network when a solver already exists?** To amortize training over many evaluations. For only a few queries, it may not be worthwhile.
 
-In our project, **the benefit of the PINN must be assessed experimentally against a network trained on data only.**
+**Is an LLM required?** No. The initial controller uses explicit predicates and numerical criteria.
 
----
+**Does a high physics residual necessarily mean an incorrect RF response?** No. It is an indicator to compare against actual error and may correlate poorly with the quantity of interest.
 
-**6. The symbolic part: explicit design rules**
+**Is there already an operational digital twin?** No. This proposal concerns a numerical surrogate. An operational digital twin would also require a connection to and updating from real-device data.
 
-The **symbolic** component represents knowledge through readable rules, relationships, and constraints.
-
-Examples:
-
-- trace width must exceed the minimum manufacturable value;
-- two elements must have a specified connection;
-- the circuit must fit within the available area;
-- the material must belong to an approved catalog.
-
-A simple rule could be:
-
-\[
-\text{trace width} \geq \text{manufacturable minimum}
-\]
-
-The integration of neural models with structured knowledge is the general principle of neuro-symbolic programming. :chatgpt-content-reference{index="2"}
-
-**Why does it help?** It excludes candidates that would be useless before spending time evaluating them.
-
-But we need to be precise about how innovative this is: **adding simple numerical bounds to an optimizer is already common practice.** The proposal becomes more interesting if the symbolic component also handles a grammar of structures, connections, and discrete choices, interacting with the neural model.
-
-**Main problem:** overly restrictive rules can exclude valid and better designs. And a manufacturable geometry may still have poor RF performance.
+**What would count as success?** Reproducible evidence of reduced cost at comparable quality, with an explicit description of the domain where the method is reliable.
 
 ---
 
-**7. Active learning and robustness: where to spend the calculations**
+<a id="references"></a>
+## References / Bibliografia
 
-**Active learning** consists of choosing which new examples are worth evaluating with the solver.
+The references support the existing methods and their limitations. They do not establish the performance or originality of the proposed integration. / I riferimenti documentano metodi esistenti e limiti; non dimostrano prestazioni o originalità dell'integrazione proposta.
 
-If the model already understands a region well, additional similar simulations may add little value. It is also worth investigating:
+**[1]** S. Koziel and A. Pietrenko-Dabrowska. “Accurate modeling of microwave structures in constrained domains using global sensitivity analysis and performance-based pre-screening.” *Scientific Reports* **15**, 43073 (2025). [DOI: 10.1038/s41598-025-27085-8](https://doi.org/10.1038/s41598-025-27085-8).
 
-- promising geometries;
-- regions with sparse data;
-- cases near the boundary between success and failure.
+**[2]** F. Feng et al. “Feature and EM Sensitivity Co-Assisted Neuro-TF Surrogate Optimization for Microwave Filter Design.” *IEEE Transactions on Microwave Theory and Techniques* **71**(11), 4749–4761 (2023). [DOI: 10.1109/TMTT.2023.3275232](https://doi.org/10.1109/TMTT.2023.3275232).
 
-An *ensemble*, i.e., multiple independently trained networks, can provide an uncertainty signal: if the networks disagree, the case deserves attention. **However, if they agree, they could still all be wrong in the same way.**
+**[3]** M. Fuhrländer and S. Schöps. “A blackbox yield estimation workflow with Gaussian process regression applied to the design of electromagnetic devices.” *Journal of Mathematics in Industry* **10**, 25 (2020). [DOI: 10.1186/s13362-020-00093-1](https://doi.org/10.1186/s13362-020-00093-1) · [Open manuscript](https://arxiv.org/abs/2003.13278).
 
-Then we study **manufacturing robustness**: for a selected geometry, we introduce many small plausible variations and estimate how many variants still satisfy the specifications.
+**[4]** L. Lu, R. Pestourie, W. Yao, Z. Wang, F. Verdugo and S. G. Johnson. “Physics-Informed Neural Networks with Hard Constraints for Inverse Design.” *SIAM Journal on Scientific Computing* **43**(6), B1105–B1132 (2021). [DOI: 10.1137/21M1397908](https://doi.org/10.1137/21M1397908) · [Open manuscript](https://arxiv.org/abs/2102.04626).
 
-\[
-\widehat{\text{yield}}
-=
-\frac{\text{variants satisfying all specifications}}
-{\text{variants evaluated}}
-\]
+**[5]** A. S. Krishnapriyan, A. Gholami, S. Zhe, R. M. Kirby and M. W. Mahoney. “Characterizing possible failure modes in physics-informed neural networks.” *NeurIPS* (2021). [Open manuscript](https://arxiv.org/abs/2109.01050).
 
-Purely didactic example: 930 successful cases out of 1,000 variants give an estimated yield of 93%.
+**[6]** J. J. Sun et al. “Neurosymbolic Programming for Science.” Discussion paper / arXiv preprint (2022). [Open manuscript](https://arxiv.org/abs/2210.05050).
 
-This estimate has two different sources of error:
-
-1. **Statistical error:** we tested a finite number of variants.
-2. **Surrogate error:** some variants may be misclassified.
-
-Increasing the number of network evaluations reduces the first problem, but **does not eliminate the second**. Independent checks with the solver are needed, and for real-device verification, prototype measurements are required.
-
----
-
-**8. When does it actually pay off?**
-
-The total AI time must be counted:
-
-\[
-T_{\mathrm{AI}}
-=
-T_{\mathrm{data}}
-+
-T_{\mathrm{training}}
-+
-T_{\mathrm{search}}
-+
-T_{\mathrm{verification}}
-\]
-
-If only a few evaluations are needed, building the surrogate may cost more than the simulations it saves. The advantage appears when the model is reused enough.
-
-Again, speed must be compared **at equal output quality**, not just by comparing the time of one prediction with the time of one simulation.
-
-| Risk | How we verify it |
-|---|---|
-| The PINN costs more than it saves | Measure the total time, including training |
-| The optimizer exploits network errors | Verify the best candidates with the solver |
-| The rules eliminate good solutions | Compare the search with and without rules |
-| The model fails near thresholds | Test those regions specifically |
-| The assumed tolerances are unrealistic | Use process data or state the assumptions |
-| The simulated filter differs from the real one | Fabricate and measure prototypes |
-
-**The first experiment I would do is small:** a single family of filters, few geometric parameters, and a verified reference solver. I would compare a simple model, a neural network, and a PINN on the same data. I would then add symbolic rules and active learning, measuring the contribution of each component.
-
-The scientific question of the project therefore becomes: **“Which of these components actually reduce the cost of obtaining an accurately verified and robust filter?”** This is a question we can answer with reproducible experiments.
-
----
-
-**This is not a completely new approach, and I did not copy the proposal from a single project.** I combined methods already present in the literature and adapted them to the challenge. The correct definition at this point is **a proposal for integration to be developed and validated**.
-
-I also need to clarify a limitation of the work done: **I verified technical plausibility, but I did not perform a systematic prior-art search.** We therefore cannot claim that no one has already developed a very similar combination.
-
-| Element of the proposal | Status |
-|---|---|
-| Neural networks as surrogates for EM simulators | Already used |
-| AI-based electromagnetic inverse design | Already used |
-| PINNs and neural operators | Existing methods |
-| Geometric and process constraints in optimization | Established practice |
-| Active learning and tolerance analysis | Existing methods |
-| Specific integration proposed for the filter | Novelty **not yet established** |
-
-For example, Augenstein and colleagues already use a neural operator as a surrogate for 3D electromagnetic inverse design. It would therefore be incorrect to present that part as our invention. :chatgpt-content-reference{index="0"} The general idea of combining neural networks and symbolic knowledge also predates this proposal. :chatgpt-content-reference{index="1"}
-
-**Using existing techniques and citing them does not mean copying.** Much research introduces a better way to combine them, solves a problem that had not been addressed before, or demonstrates an advantage that was not previously documented. However, simply combining several technologies does not automatically constitute an original contribution.
-
-In our case, a possible original direction would be:
-
-> Studying a system in which explicit rules about structure and fabrication guide both geometry generation and the choice of new simulations, improving manufacturing robustness under a limited budget.
-
-This is **still a hypothesis of contribution**, not a demonstrated novelty. To support it, we would need to:
-
-1. Search for closely related work on RF filters, neuro-symbolic design, and tolerance optimization.
-2. Identify a precise difference in our algorithm.
-3. Demonstrate with experiments that this difference produces a benefit over existing methods.
-
-**The current deck presents a technically motivated proposal, but it does not demonstrate scientific originality.** I should have made this distinction explicit from the beginning. Before presenting it as innovation, the necessary step is to compare it with the closest work and define exactly what contribution we want to claim.
-
----
-
-## Summary
-
-This document presents a balanced view: the pipeline is technically credible, but the decisive issue is not whether the individual components are known, but whether their combination yields a measurable advantage for a specific RF filter design task under realistic manufacturing and validation constraints.
+**Document scope / Ambito del documento:** introductory research proposal, based on selected literature available on 28 September 2026. This is not an exhaustive systematic review or a patentability assessment. / Proposta introduttiva basata su letteratura selezionata disponibile al 28 settembre 2026. Non è una revisione sistematica esaustiva né una valutazione di brevettabilità.
